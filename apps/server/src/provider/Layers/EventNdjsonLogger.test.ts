@@ -612,6 +612,42 @@ describe("EventNdjsonLogger", () => {
     }),
   );
 
+  it.effect("drops a record whose enumerable accessor throws while it is bounded", () =>
+    Effect.gen(function* () {
+      const tempDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-provider-log-"));
+      const basePath = NodePath.join(tempDir, "events.log");
+
+      try {
+        const logger = yield* makeEventNdjsonLogger(basePath, {
+          stream: "canonical",
+          batchWindowMs: 0,
+        });
+        assert.exists(logger);
+        if (!logger) return;
+
+        // Bounding reads every enumerable property before the encoder runs, so a
+        // throwing getter has to be contained there as well as in encoding.
+        const hostile = {
+          id: "evt-hostile",
+          get payload(): unknown {
+            throw new Error("blocked");
+          },
+        };
+        yield* logger.write(hostile, ThreadId.make("thread-hostile-getter"));
+        yield* logger.write({ id: "evt-after" }, ThreadId.make("thread-hostile-getter"));
+        yield* logger.close();
+
+        const lines = NodeFS.readFileSync(ownedLogPath(basePath, "thread-hostile-getter"), "utf8")
+          .trim()
+          .split("\n");
+        assert.equal(lines.length, 1);
+        assert.include(lines[0] ?? "", '"id":"evt-after"');
+      } finally {
+        NodeFS.rmSync(tempDir, { recursive: true, force: true });
+      }
+    }),
+  );
+
   it.effect("serializes concurrent first writes for the same segment", () =>
     Effect.gen(function* () {
       const tempDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-provider-log-"));

@@ -37,6 +37,8 @@ const DEFAULT_MAX_BUFFERED_RECORDS = 512;
 const DEFAULT_MAX_STRING_LENGTH = 256 * 1024;
 // Across all string values of one record, so that many merely large values
 // cannot add up to a line the per-value cap would have allowed individually.
+// It bounds retained text, not the encoded line: keys and JSON syntax are not
+// counted, and escaping can grow the text at most sixfold (`\u0000`).
 const DEFAULT_MAX_RECORD_LENGTH = 4 * MEBIBYTE;
 // Values this short are the identifiers that make a record legible - `type`,
 // `method`, ids. They draw from a reserve a long value may not touch, because
@@ -123,6 +125,17 @@ export class EventNdjsonLogDirectoryError extends Schema.TaggedError<EventNdjson
 ) {
   override get message(): string {
     return `Failed to create provider event log directory '${this.directory}'`;
+  }
+}
+
+class EventNdjsonLogRecordError extends Schema.TaggedError<EventNdjsonLogRecordError>()(
+  "EventNdjsonLogRecordError",
+  {
+    cause: Schema.Defect(),
+  },
+) {
+  override get message(): string {
+    return "Failed to read a provider event while bounding its log record";
   }
 }
 
@@ -625,8 +638,18 @@ function clampStrings(
   }
 }
 
-const serializeEvent = Effect.fnUntraced(function* (event: unknown) {
-  return yield* encodeUnknownJsonString(event).pipe(
+const serializeEvent = Effect.fnUntraced(function* (
+  event: unknown,
+  limits: Pick<ResolvedOptions, "maxStringLength" | "maxRecordLength">,
+) {
+  // Bounding the record reads every enumerable property before the encoder does,
+  // so a hostile accessor can throw there too; both sit behind the same guard.
+  return yield* Effect.try({
+    try: () =>
+      clampStrings(event, limits.maxStringLength, { remaining: limits.maxRecordLength }, new Set()),
+    catch: (cause) => new EventNdjsonLogRecordError({ cause }),
+  }).pipe(
+    Effect.flatMap((bounded) => encodeUnknownJsonString(bounded)),
     Effect.catch((error) =>
       logWarning("failed to serialize provider event log record", {
         errorTag: errorTag(error),
@@ -744,14 +767,7 @@ export const makeEventNdjsonLogStore = Effect.fnUntraced(function* (
 
     const write = Effect.fnUntraced(function* (event: unknown, threadId: ThreadId | null) {
       if (!shouldPersist(stream, event)) return;
-      const payload = yield* serializeEvent(
-        clampStrings(
-          event,
-          resolved.maxStringLength,
-          { remaining: resolved.maxRecordLength },
-          new Set(),
-        ),
-      );
+      const payload = yield* serializeEvent(event, resolved);
       if (payload === undefined) return;
 
       const observedAt = yield* DateTime.now.pipe(Effect.map(DateTime.formatIso));
