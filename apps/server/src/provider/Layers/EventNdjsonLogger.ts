@@ -545,13 +545,14 @@ function isPlainContainer(value: object): boolean {
  * `turn/diff/updated` diff reaches hundreds of MiB on a big turn), and encoding
  * it whole materializes an equally large line that can exhaust the heap.
  *
- * Two bounds apply. No single value keeps more than `maxLength` characters, and
- * the string values of one record, truncation markers included, together keep no
- * more than the record budget, so an event carrying many merely large values
- * cannot add up to a line the per-value cap would have allowed on its own. Once
- * the budget cannot even fit a marker, the value is dropped. The budget is spent
- * in encounter order, which is stable for a given event shape, and short values
- * keep a reserve of it so the identifiers behind a bulky field survive.
+ * Two bounds apply, and a truncation marker counts against both. No single value
+ * keeps more than `maxLength` characters, and the string values of one record
+ * together keep no more than the record budget, so an event carrying many merely
+ * large values cannot add up to a line the per-value cap would have allowed on
+ * its own. Once a limit cannot even fit a marker, the value is dropped. The
+ * budget is spent in encounter order, which is stable for a given event shape,
+ * and short values keep a reserve of it so the identifiers behind a bulky field
+ * survive.
  *
  * Values that already fit are returned by reference, so an event that needs no
  * truncation copies no object or array. Anything that is not a plain object or
@@ -575,13 +576,15 @@ function clampStrings(
       budget.remaining -= value.length;
       return value;
     }
-    // The marker is itself part of the record, so it is charged like any other
-    // retained text. Otherwise a run of oversized values would keep spending
-    // marker-sized bites of a budget that reads as exhausted.
+    // The marker is itself part of the value, so it counts against both limits
+    // like any other retained text. Otherwise a truncated value would outgrow its
+    // cap, and a run of oversized values would keep spending marker-sized bites
+    // of a budget that reads as exhausted.
+    const room = Math.min(maxLength, spendable);
     const marker = truncationMarker(value.length);
-    if (marker.length > spendable) return "";
+    if (marker.length > room) return "";
 
-    const replacement = truncateString(value, Math.min(maxLength, spendable - marker.length));
+    const replacement = truncateString(value, room - marker.length);
     budget.remaining -= replacement.length;
     return replacement;
   }

@@ -162,6 +162,14 @@ describe("EventNdjsonLogger", () => {
         assert.notInclude(line, "d".repeat(65));
         assert.include(line, "[truncated by t3, 200000 characters total]");
         assert.include(line, '"id":"evt-diff"');
+
+        // The marker is part of the value, so the cap bounds the whole replacement.
+        const record = decodeUnknownJson(parseLogLine(line).payload) as {
+          readonly payload: { readonly unifiedDiff: string };
+          readonly raw: { readonly payload: { readonly diff: string } };
+        };
+        assert.equal(record.payload.unifiedDiff.length <= 64, true);
+        assert.equal(record.raw.payload.diff.length <= 64, true);
       } finally {
         NodeFS.rmSync(tempDir, { recursive: true, force: true });
       }
@@ -210,7 +218,7 @@ describe("EventNdjsonLogger", () => {
       try {
         const logger = yield* makeEventNdjsonLogger(basePath, {
           stream: "canonical",
-          maxStringLength: 32,
+          maxStringLength: 64,
           maxRecordLength: 2_048,
         });
         assert.notEqual(logger, undefined);
