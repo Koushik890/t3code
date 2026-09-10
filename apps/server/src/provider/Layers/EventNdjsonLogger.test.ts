@@ -648,6 +648,44 @@ describe("EventNdjsonLogger", () => {
     }),
   );
 
+  it.effect("reads each field once when rebuilding a record that needs bounding", () =>
+    Effect.gen(function* () {
+      const tempDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-provider-log-"));
+      const basePath = NodePath.join(tempDir, "provider-canonical.ndjson");
+
+      try {
+        const logger = yield* makeEventNdjsonLogger(basePath, {
+          stream: "canonical",
+          maxStringLength: 64,
+        });
+        assert.exists(logger);
+        if (!logger) return;
+
+        // An accessor that grows between reads. If the rebuilt record re-read it
+        // instead of keeping the value it bounded, the later, oversized read would
+        // reach the encoder unbounded.
+        let reads = 0;
+        const event = {
+          get note(): string {
+            reads += 1;
+            return reads === 1 ? "short" : "n".repeat(100_000);
+          },
+          raw: "r".repeat(100_000),
+          id: "evt-accessor",
+        };
+        yield* logger.write(event, ThreadId.make("thread-accessor"));
+        yield* logger.close();
+
+        const line = NodeFS.readFileSync(ownedLogPath(basePath, "thread-accessor"), "utf8").trim();
+        assert.equal(line.length < 1_000, true);
+        assert.notInclude(line, "n".repeat(65));
+        assert.include(line, '"id":"evt-accessor"');
+      } finally {
+        NodeFS.rmSync(tempDir, { recursive: true, force: true });
+      }
+    }),
+  );
+
   it.effect("serializes concurrent first writes for the same segment", () =>
     Effect.gen(function* () {
       const tempDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-provider-log-"));

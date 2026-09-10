@@ -553,10 +553,60 @@ function isPlainContainer(value: object): boolean {
 }
 
 /**
- * Bounds the string values of one event before it is serialized. A provider can
- * hand us a payload far larger than any log record should be (a Codex
- * `turn/diff/updated` diff reaches hundreds of MiB on a big turn), and encoding
- * it whole materializes an equally large line that can exhaust the heap.
+ * How much of the record budget a string may draw on. Values this short are the
+ * identifiers that make a record legible, so they may also spend the reserve.
+ */
+function spendableFor(value: string, budget: { remaining: number }): number {
+  return value.length <= SHORT_VALUE_RESERVE
+    ? budget.remaining
+    : Math.max(budget.remaining - SHORT_VALUE_RESERVE, 0);
+}
+
+/**
+ * Answers whether an event already fits both limits, reading it without copying
+ * anything. It spends the budget exactly the way `clampStrings` does, so an event
+ * it accepts would come out of `clampStrings` unchanged. This is the only pass an
+ * ordinary event takes, which is why it walks objects with `for...in` rather
+ * than allocating an `Object.entries` array for each one.
+ */
+function fitsLimits(
+  value: unknown,
+  maxLength: number,
+  budget: { remaining: number },
+  ancestors: Set<object>,
+): boolean {
+  if (typeof value === "string") {
+    if (value.length > maxLength || value.length > spendableFor(value, budget)) return false;
+    budget.remaining -= value.length;
+    return true;
+  }
+  if (typeof value !== "object" || value === null) return true;
+  if (!isPlainContainer(value) || ancestors.has(value)) return true;
+
+  ancestors.add(value);
+  try {
+    if (Array.isArray(value)) {
+      const entries = value as ReadonlyArray<unknown>;
+      for (let index = 0; index < entries.length; index += 1) {
+        if (!fitsLimits(entries[index], maxLength, budget, ancestors)) return false;
+      }
+      return true;
+    }
+
+    const fields = value as Record<string, unknown>;
+    for (const key in fields) {
+      if (Object.hasOwn(fields, key) && !fitsLimits(fields[key], maxLength, budget, ancestors)) {
+        return false;
+      }
+    }
+    return true;
+  } finally {
+    ancestors.delete(value);
+  }
+}
+
+/**
+ * Rebuilds an event that does not fit, bounding its string values on the way.
  *
  * Two bounds apply, and a truncation marker counts against both. No single value
  * keeps more than `maxLength` characters, and the string values of one record
@@ -567,10 +617,12 @@ function isPlainContainer(value: object): boolean {
  * and short values keep a reserve of it so the identifiers behind a bulky field
  * survive.
  *
- * Values that already fit are returned by reference, so an event that needs no
- * truncation copies no object or array. Anything that is not a plain object or
- * array is left alone, because `toJSON` carriers such as `Date` must reach the
- * encoder intact. A cycle is returned untouched at the point it closes, so
+ * Every plain object and array is copied, and each field is read exactly once
+ * and stored as data, so an accessor cannot hand the encoder a different,
+ * unbounded value afterwards. Objects are copied without a prototype so a
+ * `__proto__` key stays an ordinary field. Anything that is not a plain object
+ * or array is left alone, because `toJSON` carriers such as `Date` must reach
+ * the encoder intact. A cycle is returned untouched at the point it closes, so
  * serialization still fails the way it did before and `serializeEvent` reports it.
  */
 function clampStrings(
@@ -580,11 +632,7 @@ function clampStrings(
   ancestors: Set<object>,
 ): unknown {
   if (typeof value === "string") {
-    const spendable =
-      value.length <= SHORT_VALUE_RESERVE
-        ? budget.remaining
-        : Math.max(budget.remaining - SHORT_VALUE_RESERVE, 0);
-
+    const spendable = spendableFor(value, budget);
     if (value.length <= maxLength && value.length <= spendable) {
       budget.remaining -= value.length;
       return value;
@@ -608,34 +656,50 @@ function clampStrings(
   try {
     if (Array.isArray(value)) {
       const entries = value as ReadonlyArray<unknown>;
-      let clampedEntries: Array<unknown> | undefined;
+      const bounded: Array<unknown> = [];
       for (let index = 0; index < entries.length; index += 1) {
-        const entry = entries[index];
-        const clamped = clampStrings(entry, maxLength, budget, ancestors);
-        if (clamped !== entry && clampedEntries === undefined) {
-          clampedEntries = entries.slice(0, index);
-        }
-        clampedEntries?.push(clamped);
+        bounded.push(clampStrings(entries[index], maxLength, budget, ancestors));
       }
-      return clampedEntries ?? value;
+      return bounded;
     }
 
     const fields = value as Record<string, unknown>;
-    let clampedFields: Record<string, unknown> | undefined;
-    // `for...in` rather than `Object.entries`: this runs on every logged event,
-    // and the entries array would be allocated even when nothing is truncated.
+    const bounded: Record<string, unknown> = Object.create(null);
     for (const key in fields) {
       if (!Object.hasOwn(fields, key)) continue;
-      const entry = fields[key];
-      const clamped = clampStrings(entry, maxLength, budget, ancestors);
-      if (clamped === entry) continue;
-      clampedFields ??= { ...fields };
-      clampedFields[key] = clamped;
+      bounded[key] = clampStrings(fields[key], maxLength, budget, ancestors);
     }
-    return clampedFields ?? value;
+    return bounded;
   } finally {
     ancestors.delete(value);
   }
+}
+
+/**
+ * Bounds the string values of one event before it is serialized. A provider can
+ * hand us a payload far larger than any log record should be (a Codex
+ * `turn/diff/updated` diff reaches hundreds of MiB on a big turn), and encoding
+ * it whole materializes an equally large line that can exhaust the heap. An
+ * event that already fits is returned as it came, so the ordinary path copies
+ * no object or array; only one that does not fit is rebuilt.
+ */
+function boundEvent(
+  event: unknown,
+  limits: Pick<ResolvedOptions, "maxStringLength" | "maxRecordLength">,
+): unknown {
+  const fits = fitsLimits(
+    event,
+    limits.maxStringLength,
+    { remaining: limits.maxRecordLength },
+    new Set(),
+  );
+  if (fits) return event;
+  return clampStrings(
+    event,
+    limits.maxStringLength,
+    { remaining: limits.maxRecordLength },
+    new Set(),
+  );
 }
 
 const serializeEvent = Effect.fnUntraced(function* (
@@ -645,8 +709,7 @@ const serializeEvent = Effect.fnUntraced(function* (
   // Bounding the record reads every enumerable property before the encoder does,
   // so a hostile accessor can throw there too; both sit behind the same guard.
   return yield* Effect.try({
-    try: () =>
-      clampStrings(event, limits.maxStringLength, { remaining: limits.maxRecordLength }, new Set()),
+    try: () => boundEvent(event, limits),
     catch: (cause) => new EventNdjsonLogRecordError({ cause }),
   }).pipe(
     Effect.flatMap((bounded) => encodeUnknownJsonString(bounded)),
