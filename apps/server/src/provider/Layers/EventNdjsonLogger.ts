@@ -617,13 +617,14 @@ function fitsLimits(
  * and short values keep a reserve of it so the identifiers behind a bulky field
  * survive.
  *
- * Every plain object and array is copied, and each field is read exactly once
- * and stored as data, so an accessor cannot hand the encoder a different,
- * unbounded value afterwards. Objects are copied without a prototype so a
- * `__proto__` key stays an ordinary field. Anything that is not a plain object
- * or array is left alone, because `toJSON` carriers such as `Date` must reach
- * the encoder intact. A cycle is returned untouched at the point it closes, so
- * serialization still fails the way it did before and `serializeEvent` reports it.
+ * Every plain object and array is copied, and this pass reads each field once
+ * and stores it as data, so the encoder sees only values that were bounded
+ * rather than whatever an accessor returns on a later read. Objects are copied
+ * without a prototype so a `__proto__` key stays an ordinary field. Anything
+ * that is not a plain object or array is left alone, because `toJSON` carriers
+ * such as `Date` must reach the encoder intact. A cycle is returned untouched at
+ * the point it closes, so serialization still fails the way it did before and
+ * `serializeEvent` reports it.
  */
 function clampStrings(
   value: unknown,
@@ -682,6 +683,12 @@ function clampStrings(
  * it whole materializes an equally large line that can exhaust the heap. An
  * event that already fits is returned as it came, so the ordinary path copies
  * no object or array; only one that does not fit is rebuilt.
+ *
+ * The read-once guarantee therefore belongs to the rebuild. An event that fits
+ * reaches the encoder as it came, which reads its accessors again, exactly as it
+ * did before any bounding existed; an event that is rebuilt has its accessors
+ * read twice, once by each pass. Logged events are JSON-decoded payloads and
+ * object literals, so neither case arises in practice.
  */
 function boundEvent(
   event: unknown,
