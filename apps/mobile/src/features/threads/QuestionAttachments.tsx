@@ -1,19 +1,19 @@
+import * as Dialog from "../../components/ui/Dialog";
 import { TextInputWrapper } from "expo-paste-input";
-import { AppTextInput as TextInput } from "../../components/AppText";
+import { AppTextInput as TextInput } from "../../components/ui/AppText";
 import { useNativePaste } from "../../lib/useNativePaste";
 import { convertPastedImagesToAttachments } from "../../lib/composerImages";
-import {
-  PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
-  type ApprovalRequestId,
-  type UserInputQuestion,
-} from "@t3tools/contracts";
+import { PROVIDER_SEND_TURN_MAX_ATTACHMENTS, type UserInputQuestion } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
-import { Alert, View } from "react-native";
-import { useEffect, useRef } from "react";
-import { ComposerAttachmentButton } from "../../components/ComposerAttachmentButton";
+import { View } from "react-native";
+import { useEffect, useRef, useState } from "react";
+import { ComposerAttachmentButton } from "./ComposerAttachmentButton";
 import { ComposerAttachmentStrip } from "../../components/ComposerAttachmentStrip";
 import { pickComposerFiles, pickComposerMedia } from "../../lib/composerImages";
 import { useThreadSelection } from "../../state/use-thread-selection";
+import { useNavigation } from "@react-navigation/native";
+import { FilePreviewModal, type FilePreviewSource } from "../../components/FilePreviewModal";
+import { VideoPreviewModal, type VideoPreviewSource } from "../../components/VideoPreviewModal";
 import { useServerConfigs } from "../../state/entities";
 import { appAtomRegistry } from "../../state/atom-registry";
 import {
@@ -29,7 +29,7 @@ import {
 } from "../../state/question-attachments";
 
 export function QuestionAttachments(props: {
-  requestId: ApprovalRequestId;
+  requestId: string;
   question: UserInputQuestion;
   questions: ReadonlyArray<UserInputQuestion>;
   disabled: boolean;
@@ -38,6 +38,9 @@ export function QuestionAttachments(props: {
   onInputFocusChange?: ((focused: boolean) => void) | undefined;
 }) {
   const { selectedThread } = useThreadSelection();
+  const navigation = useNavigation();
+  const [previewFile, setPreviewFile] = useState<FilePreviewSource | null>(null);
+  const [previewVideo, setPreviewVideo] = useState<VideoPreviewSource | null>(null);
   const configs = useServerConfigs();
   const drafts = useAtomValue(composerDraftsAtom);
   const scopeKey = JSON.stringify([
@@ -98,11 +101,14 @@ export function QuestionAttachments(props: {
           (appAtomRegistry.get(questionAttachmentPreparationAtom)[key] ?? 0) > 0
         ) {
           if (append(key, images) > 0)
-            Alert.alert("Could not paste image", "Too many attachments.");
+            Dialog.alert("Could not paste image", "Too many attachments.");
         } else await releaseUnusedComposerAttachmentFiles(images);
       })
       .catch((error) =>
-        Alert.alert("Could not paste image", error instanceof Error ? error.message : "Try again."),
+        Dialog.alert(
+          "Could not paste image",
+          error instanceof Error ? error.message : "Try again.",
+        ),
       )
       .finally(() => changeQuestionAttachmentPreparation(key, -1));
   });
@@ -143,9 +149,9 @@ export function QuestionAttachments(props: {
       }
       const rejected = append(key, picked);
       if (result.error || rejected > 0)
-        Alert.alert("Could not attach file", result.error ?? "Too many attachments.");
+        Dialog.alert("Could not attach file", result.error ?? "Too many attachments.");
     } catch (error) {
-      Alert.alert("Could not attach file", error instanceof Error ? error.message : "Try again.");
+      Dialog.alert("Could not attach file", error instanceof Error ? error.message : "Try again.");
     } finally {
       changeQuestionAttachmentPreparation(key, -1);
     }
@@ -166,10 +172,29 @@ export function QuestionAttachments(props: {
         onRemove={(id) => {
           if (!props.disabled) removeComposerDraftAttachment(key, id);
         }}
+        onPressPreview={setPreviewFile}
+        onPressVideo={(attachment, sourceIdentifier) =>
+          setPreviewVideo({ type: "local", attachment, sourceIdentifier })
+        }
+        onPressDocument={(attachment) =>
+          navigation.navigate("ThreadAttachment", {
+            environmentId: String(environmentId),
+            threadId: String(threadId),
+            attachmentId: attachment.id,
+            name: attachment.name,
+            mimeType: attachment.mimeType,
+            sizeBytes: String(attachment.sizeBytes),
+            draftKey: key,
+          })
+        }
       />
+      <FilePreviewModal source={previewFile} onRequestClose={() => setPreviewFile(null)} />
+      <VideoPreviewModal source={previewVideo} onRequestClose={() => setPreviewVideo(null)} />
       <TextInputWrapper onPaste={paste}>
         <TextInput
           value={props.value}
+          multiline={props.question.initialAnswer !== undefined}
+          submitBehavior={props.question.initialAnswer !== undefined ? "newline" : undefined}
           editable={!props.disabled}
           onChangeText={props.onChangeText}
           onFocus={() => props.onInputFocusChange?.(true)}

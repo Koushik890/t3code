@@ -1,11 +1,10 @@
 import type { SnapShotSource } from "@t3tools/contracts";
 
 import type { ComposerFileAttachment } from "../../composerDraftStore";
-import { type ChatImageAttachment, isVideoAttachment } from "../../types";
+import { type ChatFileAttachment, type ChatImageAttachment, isVideoAttachment } from "../../types";
 import type {
   AssetCreateUrlResult,
   AssetResource,
-  ChatFileAttachment,
   EnvironmentId,
   ScopedThreadRef,
 } from "@t3tools/contracts";
@@ -21,13 +20,11 @@ import type { MediaActionSource } from "../media/MediaActions";
 import { resolveProtocolRelativeMediaUrl } from "../media/mediaContent";
 
 export interface ExpandedImageItem {
-  /** A loadable URL, or null when the dialog must mint one from `asset` first. */
   src: string | null;
   name: string;
   type?: "video";
   source?: SnapShotSource;
   autoPlay?: boolean;
-  /** Authored remote destination to open when embedding fails, never a generated asset URL. */
   originalUrl?: string;
   srcFragment?: string;
   actionsSource?: MediaActionSource;
@@ -38,7 +35,10 @@ export interface ExpandedImagePreview {
   index: number;
 }
 
-/** Resolves a chat media reference on its owning environment, without downloading its bytes. */
+export function wrapExpandedImageIndex(index: number, imageCount: number): number {
+  return imageCount > 0 ? ((index % imageCount) + imageCount) % imageCount : 0;
+}
+
 export async function resolveMarkdownMediaPreview(input: {
   source: string;
   resolvedFilePath?: string | undefined;
@@ -116,6 +116,35 @@ export function buildAttachmentVideoAsset(
       fileName: attachment.name,
       mimeType: videoMimeType(attachment) ?? attachment.mimeType,
     },
+  };
+}
+
+export function buildAttachmentVideoPreview(
+  environmentId: EnvironmentId,
+  attachment: ChatFileAttachment,
+): ExpandedImagePreview | null {
+  if (!isVideoAttachment(attachment)) return null;
+  const src = attachment.previewUrl ?? null;
+  const asset =
+    attachment.downloadable === false
+      ? undefined
+      : buildAttachmentVideoAsset(environmentId, attachment);
+  if (src === null && asset === undefined) return null;
+  return {
+    images: [
+      {
+        src,
+        name: attachment.name,
+        type: "video",
+        actionsSource: {
+          kind: "video",
+          name: attachment.name,
+          src,
+          ...(asset ? { asset } : {}),
+        },
+      },
+    ],
+    index: 0,
   };
 }
 
