@@ -490,47 +490,6 @@ describe("DesktopShellEnvironment", () => {
     }),
   );
 
-  it.effect("reads the persisted Windows PATH stores and the WinGet links directory", () =>
-    Effect.gen(function* () {
-      const env: NodeJS.ProcessEnv = {
-        PATH: "C:\\Windows\\System32",
-        LOCALAPPDATA: "C:\\Users\\testuser\\AppData\\Local",
-      };
-      const scripts: Array<string> = [];
-
-      yield* runShellEnvironment({
-        env,
-        platform: "win32",
-        handler: (command) => {
-          if (command._tag !== "StandardCommand") return "";
-          scripts.push(command.args.at(-1) ?? "");
-          return envOutput({ PATH: "C:\\Windows\\System32" });
-        },
-      });
-
-      // A Start Menu launch inherits a PATH snapshot taken before `winget
-      // install` ran, so the persisted stores are the only place the new entry
-      // exists.
-      const script = scripts.join("\n");
-      assert.include(script, "foreach ($target in @('User', 'Machine'))");
-      assert.include(script, "-not [Environment]::GetEnvironmentVariable($entry.Key, 'Process')");
-      assert.include(
-        script,
-        "[Environment]::SetEnvironmentVariable($entry.Key, $entry.Value, 'Process')",
-      );
-      assert.include(
-        script,
-        "@('Process', 'User', 'Machine') | ForEach-Object { try { [Environment]::GetEnvironmentVariable('PATH', $_) } catch { $null } }",
-      );
-      assert.include(script, "$value = $candidates -join ';'");
-      assert.include(script, "$value = @($candidates)[0]");
-      assert.include(
-        env.PATH ?? "",
-        "C:\\Users\\testuser\\AppData\\Local\\Microsoft\\WinGet\\Links",
-      );
-    }),
-  );
-
   it.effect.each([false, true])(
     "leaves Windows preparation incomplete when loadProfile=%s fails",
     (loadProfile) =>

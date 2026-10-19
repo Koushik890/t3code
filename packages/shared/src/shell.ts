@@ -217,40 +217,12 @@ function buildEnvironmentCaptureCommand(names: ReadonlyArray<string>): string {
     .join("; ");
 }
 
-/**
- * Reads a variable from the process copy and from the persisted User and Machine
- * stores. The process copy alone is a snapshot taken when the launching shell
- * started, so an entry a package manager persisted afterwards (`winget install`
- * appending to User PATH, say) stays invisible to a Start Menu launch until the
- * user signs out. PATH keeps every source and is deduped downstream; any other
- * variable takes the first store that has it. A store that cannot be read yields
- * nothing rather than failing the whole probe.
- */
-function windowsEnvironmentValueExpressions(name: string): ReadonlyArray<string> {
-  return [
-    `$candidates = @('Process', 'User', 'Machine') | ForEach-Object { try { [Environment]::GetEnvironmentVariable('${name}', $_) } catch { $null } } | Where-Object { $_ }`,
-    name === "PATH"
-      ? `$value = $candidates -join '${WINDOWS_PATH_DELIMITER}'`
-      : "$value = @($candidates)[0]",
-  ];
-}
-
-/**
- * Fills gaps in this probe's own process block from the persisted stores before
- * any value is read. Machine and User `PATH` are `REG_EXPAND_SZ`, and .NET expands
- * their `%VAR%` references against the reading process, so an installer that
- * persisted both a new variable and a `PATH` entry referencing it would otherwise
- * yield a literal `%VAR%\bin` that resolves to nothing.
- *
- * Only names the process does not already carry are filled, and User is applied
- * before Machine, which keeps the same Process before User before Machine order
- * the capture below relies on. A value the launching shell set deliberately is
- * never replaced. `PATH` is skipped outright: it is the value being measured.
- */
+// Registry REG_EXPAND_SZ values expand against the reading process. Fill only
+// missing variables in this probe, preserving Process > User > Machine precedence.
 const WINDOWS_PERSISTED_ENVIRONMENT_HYDRATION =
   "foreach ($target in @('User', 'Machine')) { try { foreach ($entry in ([Environment]::GetEnvironmentVariables($target)).GetEnumerator()) { if ($entry.Key -ne 'PATH' -and -not [Environment]::GetEnvironmentVariable($entry.Key, 'Process')) { [Environment]::SetEnvironmentVariable($entry.Key, $entry.Value, 'Process') } } } catch { } }";
 
-function buildWindowsEnvironmentCaptureCommand(names: ReadonlyArray<string>): string {
+export function buildWindowsEnvironmentCaptureCommand(names: ReadonlyArray<string>): string {
   return [
     "$ErrorActionPreference = 'Stop'",
     WINDOWS_PERSISTED_ENVIRONMENT_HYDRATION,
@@ -261,7 +233,11 @@ function buildWindowsEnvironmentCaptureCommand(names: ReadonlyArray<string>): st
 
       return [
         `Write-Output '${envCaptureStart(name)}'`,
-        ...windowsEnvironmentValueExpressions(name),
+        `$candidates = @('Process', 'User', 'Machine') | ForEach-Object { try { [Environment]::GetEnvironmentVariable('${name}', $_) } catch { $null } } | Where-Object { $_ }`,
+        // Append persisted PATH entries after the process snapshot; callers dedupe.
+        name === "PATH"
+          ? `$value = $candidates -join '${WINDOWS_PATH_DELIMITER}'`
+          : "$value = @($candidates)[0]",
         "if ($null -ne $value -and $value.Length -gt 0) { Write-Output $value }",
         `Write-Output '${envCaptureEnd(name)}'`,
       ];
