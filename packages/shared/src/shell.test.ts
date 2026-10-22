@@ -236,6 +236,13 @@ describe("buildWindowsEnvironmentCaptureCommand", () => {
     expect(command.indexOf("$inherited = @{}")).toBeLessThan(
       command.indexOf("@('Machine', 'User')"),
     );
+
+    // One scope is expanded before its first value is stored, so a reference
+    // within that scope only resolves on a second pass over the hydrated names.
+    expect(command).toContain("[Environment]::ExpandEnvironmentVariables($value)");
+    expect(command.indexOf("$hydrated.Add($entry.Key)")).toBeLessThan(
+      command.indexOf("ExpandEnvironmentVariables($value)"),
+    );
   });
 });
 
