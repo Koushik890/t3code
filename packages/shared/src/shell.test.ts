@@ -12,6 +12,7 @@ import * as NodePath from "node:path";
 import { describe, expect, it, vi } from "vite-plus/test";
 
 import {
+  buildWindowsEnvironmentCaptureCommand,
   CommandAvailability,
   CommandResolutionCache,
   type CommandAvailabilityChecker,
@@ -220,6 +221,21 @@ describe("readEnvironmentFromWindowsShell", () => {
       encoding: "utf8",
       timeout: 5000,
     });
+  });
+});
+
+describe("buildWindowsEnvironmentCaptureCommand", () => {
+  it("hydrates Machine before User without overwriting inherited names", () => {
+    const command = buildWindowsEnvironmentCaptureCommand(["PATH"]);
+
+    // A User REG_EXPAND_SZ value referencing a Machine-only variable expands
+    // against this probe, so Machine has to land first; the inherited snapshot
+    // is what keeps Process ahead of both.
+    expect(command).toContain("@('Machine', 'User')");
+    expect(command).toContain("$inherited.ContainsKey($entry.Key)");
+    expect(command.indexOf("$inherited = @{}")).toBeLessThan(
+      command.indexOf("@('Machine', 'User')"),
+    );
   });
 });
 

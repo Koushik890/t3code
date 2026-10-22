@@ -249,10 +249,16 @@ export function buildEnvironmentCaptureCommand(
     .join("; ");
 }
 
-// Registry REG_EXPAND_SZ values expand against the reading process. Fill only
-// missing variables in this probe, preserving Process > User > Machine precedence.
+// Registry REG_EXPAND_SZ values expand against the reading process, so a
+// persisted value is only expandable once the variables it references are in this
+// probe's own block. Machine is applied before User for that reason: a User value
+// referencing a Machine-only variable would otherwise keep its literal
+// "%NAME%" text. Precedence still runs Process > User > Machine, because the
+// names the probe inherited are snapshotted first and never overwritten, and the
+// User pass overwrites whatever the Machine pass filled in. PATH is skipped: it
+// is the value under measurement.
 const WINDOWS_PERSISTED_ENVIRONMENT_HYDRATION =
-  "foreach ($target in @('User', 'Machine')) { try { foreach ($entry in ([Environment]::GetEnvironmentVariables($target)).GetEnumerator()) { if ($entry.Key -ne 'PATH' -and -not [Environment]::GetEnvironmentVariable($entry.Key, 'Process')) { [Environment]::SetEnvironmentVariable($entry.Key, $entry.Value, 'Process') } } } catch { } }";
+  "$inherited = @{}; foreach ($name in ([Environment]::GetEnvironmentVariables('Process')).Keys) { $inherited[$name] = $true }; foreach ($target in @('Machine', 'User')) { try { foreach ($entry in ([Environment]::GetEnvironmentVariables($target)).GetEnumerator()) { if ($entry.Key -ne 'PATH' -and -not $inherited.ContainsKey($entry.Key)) { [Environment]::SetEnvironmentVariable($entry.Key, $entry.Value, 'Process') } } } catch { } }";
 
 export function buildWindowsEnvironmentCaptureCommand(names: ReadonlyArray<string>): string {
   return [
