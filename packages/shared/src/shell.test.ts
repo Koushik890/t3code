@@ -225,25 +225,27 @@ describe("readEnvironmentFromWindowsShell", () => {
 });
 
 describe("buildWindowsEnvironmentCaptureCommand", () => {
-  it("hydrates Machine before User without overwriting inherited names", () => {
+  const MERGE = "$persisted[$entry.Key] = $entry.Value";
+  const WRITE = "[Environment]::SetEnvironmentVariable($entry.Key, $entry.Value, 'Process')";
+  const EXPAND = "[Environment]::ExpandEnvironmentVariables($value)";
+
+  it("merges the persisted stores before writing, then expands what it wrote", () => {
     const command = buildWindowsEnvironmentCaptureCommand(["PATH"]);
 
-    // A User REG_EXPAND_SZ value referencing a Machine-only variable expands
-    // against this probe, so Machine has to land first; the inherited snapshot
-    // is what keeps Process ahead of both.
+    // Reading a store expands its whole scope against the block as it stands, so
+    // both stores are read before anything is written. User is merged last, and
+    // the inherited snapshot keeps Process ahead of both.
     expect(command).toContain("@('Machine', 'User')");
     expect(command).toContain("$inherited.ContainsKey($entry.Key)");
-    expect(command.indexOf("$inherited = @{}")).toBeLessThan(
-      command.indexOf("@('Machine', 'User')"),
-    );
-
-    // One scope is expanded before its first value is stored, so a reference
-    // within that scope only resolves on a second pass over the hydrated names.
-    expect(command).toContain("[Environment]::ExpandEnvironmentVariables($value)");
+    expect(command).toContain(MERGE);
+    expect(command).toContain(WRITE);
+    expect(command).toContain(EXPAND);
     expect(command).toContain("for ($round = 0; $round -lt 3; $round++)");
-    expect(command.indexOf("$hydrated.Add($entry.Key)")).toBeLessThan(
-      command.indexOf("ExpandEnvironmentVariables($value)"),
-    );
+
+    // Order carries the correctness here: merge, then write, then expand.
+    expect(command.indexOf(MERGE)).toBeGreaterThan(command.indexOf("$inherited = @{}"));
+    expect(command.indexOf(WRITE)).toBeGreaterThan(command.indexOf(MERGE));
+    expect(command.indexOf(EXPAND)).toBeGreaterThan(command.indexOf(WRITE));
   });
 });
 

@@ -249,25 +249,28 @@ export function buildEnvironmentCaptureCommand(
     .join("; ");
 }
 
-// Registry REG_EXPAND_SZ values expand against the reading process, so a
-// persisted value is only expandable once the variables it references are in this
-// probe's own block. Machine is applied before User for that reason: a User value
-// referencing a Machine-only variable would otherwise keep its literal
-// "%NAME%" text. Reading one scope cannot fix a reference within that same scope,
-// because the whole scope is expanded before the first value is stored, so the
-// hydrated names are expanded again once they are all present. That repeats
-// while it keeps resolving references, which walks a chain through several
-// persisted variables; a value whose reference no store defines stays literal and
-// ends the loop.
+// Fills gaps in this probe's own block from the persisted stores, so a value an
+// installer wrote after the launching shell started is visible here.
+//
+// Both stores are read before anything is written, because reading one expands
+// its whole scope against the block as it stands: writing Machine first would
+// let a User value referencing a Machine variable resolve against the Machine
+// copy, and the later User copy of that variable could no longer repair it. The
+// merge takes User over Machine, the names the probe inherited are snapshotted
+// and never replaced, and only then are the values written, so precedence runs
+// Process > User > Machine.
+//
+// A value referencing a variable that was absent while its scope was read keeps
+// its literal "%NAME%" text, so the written values are expanded afterwards,
+// repeatedly while that keeps resolving, which also walks a chain. A reference
+// no store defines expands to itself, changes nothing, and ends the loop.
 // shortcut: the loop stops after three rounds, so a chain longer than three
 // persisted variables keeps its remaining literal text. Lift the bound if a
 // provider ever ships one.
-// Precedence still runs Process > User > Machine, because the names the probe
-// inherited are snapshotted first and never overwritten, and the User pass
-// overwrites whatever the Machine pass filled in. PATH is skipped: it is the
-// value under measurement.
+//
+// PATH is skipped throughout: it is the value under measurement.
 const WINDOWS_PERSISTED_ENVIRONMENT_HYDRATION =
-  "$inherited = @{}; foreach ($name in ([Environment]::GetEnvironmentVariables('Process')).Keys) { $inherited[$name] = $true }; $hydrated = New-Object System.Collections.ArrayList; foreach ($target in @('Machine', 'User')) { try { foreach ($entry in ([Environment]::GetEnvironmentVariables($target)).GetEnumerator()) { if ($entry.Key -ne 'PATH' -and -not $inherited.ContainsKey($entry.Key)) { [Environment]::SetEnvironmentVariable($entry.Key, $entry.Value, 'Process'); [void]$hydrated.Add($entry.Key) } } } catch { } }; for ($round = 0; $round -lt 3; $round++) { $changed = $false; foreach ($name in $hydrated) { try { $value = [Environment]::GetEnvironmentVariable($name, 'Process'); if ($value -and $value.Contains('%')) { $expanded = [Environment]::ExpandEnvironmentVariables($value); if ($expanded -ne $value) { [Environment]::SetEnvironmentVariable($name, $expanded, 'Process'); $changed = $true } } } catch { } }; if (-not $changed) { break } }";
+  "$inherited = @{}; foreach ($name in ([Environment]::GetEnvironmentVariables('Process')).Keys) { $inherited[$name] = $true }; $persisted = @{}; foreach ($target in @('Machine', 'User')) { try { foreach ($entry in ([Environment]::GetEnvironmentVariables($target)).GetEnumerator()) { if ($entry.Key -ne 'PATH' -and -not $inherited.ContainsKey($entry.Key)) { $persisted[$entry.Key] = $entry.Value } } } catch { } }; foreach ($entry in @($persisted.GetEnumerator())) { try { [Environment]::SetEnvironmentVariable($entry.Key, $entry.Value, 'Process') } catch { } }; for ($round = 0; $round -lt 3; $round++) { $changed = $false; foreach ($name in @($persisted.Keys)) { try { $value = [Environment]::GetEnvironmentVariable($name, 'Process'); if ($value -and $value.Contains('%')) { $expanded = [Environment]::ExpandEnvironmentVariables($value); if ($expanded -ne $value) { [Environment]::SetEnvironmentVariable($name, $expanded, 'Process'); $changed = $true } } } catch { } }; if (-not $changed) { break } }";
 
 export function buildWindowsEnvironmentCaptureCommand(names: ReadonlyArray<string>): string {
   return [
