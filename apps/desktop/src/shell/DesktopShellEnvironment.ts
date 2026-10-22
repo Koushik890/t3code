@@ -1,4 +1,5 @@
 import {
+  buildEnvironmentCaptureCommand,
   buildWindowsEnvironmentCaptureCommand,
   listLoginShellCandidates,
   resolveKnownWindowsCliDirs,
@@ -183,17 +184,6 @@ const logShellEnvironmentCommandError = (
     }),
   );
 
-const capturePosixEnvironmentCommand = (names: ReadonlyArray<string>) =>
-  names
-    .map((name) => {
-      return [
-        `printf '%s\\n' '${startMarker(name)}'`,
-        `printenv ${name} || true`,
-        `printf '%s\\n' '${endMarker(name)}'`,
-      ].join("; ");
-    })
-    .join("; ");
-
 const extractEnvironment = (output: string, names: ReadonlyArray<string>): EnvironmentPatch => {
   const environment: EnvironmentPatch = {};
 
@@ -291,7 +281,7 @@ const readLoginShellEnvironment = (
     : runCommandOutput({
         probe: "login-shell",
         command: shell,
-        args: ["-ilc", capturePosixEnvironmentCommand(names)],
+        args: ["-ilc", buildEnvironmentCaptureCommand(shell, names)],
         timeout: LOGIN_SHELL_TIMEOUT,
       }).pipe(Effect.map((output) => extractEnvironment(output, names)));
 
